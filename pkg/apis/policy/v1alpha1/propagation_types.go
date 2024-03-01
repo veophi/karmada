@@ -312,6 +312,8 @@ type Placement struct {
 	// when propagating resources that have replicas in spec (e.g. deployments, statefulsets) to member clusters.
 	// +optional
 	ReplicaScheduling *ReplicaSchedulingStrategy `json:"replicaScheduling,omitempty"`
+
+	RollingUpdating *RollingUpdatingStrategy `json:"rollingUpdating,omitempty"`
 }
 
 // SpreadFieldValue is the type to define valid values for SpreadConstraint.SpreadByField
@@ -409,6 +411,24 @@ const (
 	ReplicaDivisionPreferenceAggregated ReplicaDivisionPreference = "Aggregated"
 	// ReplicaDivisionPreferenceWeighted divides replicas by weight according to WeightPreference.
 	ReplicaDivisionPreferenceWeighted ReplicaDivisionPreference = "Weighted"
+)
+
+type RollingUpdatingStrategy struct {
+	RollingUpdatingType        RollingUpdatingType      `json:"rollingUpdatingType,omitempty"`
+	RollingPartitionPreference RollingDividedPreference `json:"rollingPartitionPreference,omitempty"`
+}
+type RollingUpdatingType string
+
+const (
+	RollingUpdatingTypeDuplicated = "Duplicated"
+	RollingUpdatingTypeDivided    = "Divided"
+)
+
+type RollingDividedPreference string
+
+const (
+	RollingDividedPreferenceAggregated = "Aggregated"
+	RollingDividedPreferenceWeighted   = "Weighted"
 )
 
 // ReplicaSchedulingStrategy represents the assignment strategy of replicas.

@@ -20,8 +20,11 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/klog/v2"
+	"math"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sort"
 
 	configv1alpha1 "github.com/karmada-io/karmada/pkg/apis/config/v1alpha1"
 	policyv1alpha1 "github.com/karmada-io/karmada/pkg/apis/policy/v1alpha1"
@@ -72,12 +75,13 @@ func ensureWork(
 		}
 	}
 
+	splitReplicas := make(map[string]int32, len(targetClusters))
+	splitWorkloads := make(map[string]*unstructured.Unstructured, len(targetClusters))
 	for i := range targetClusters {
 		targetCluster := targetClusters[i]
 		clonedWorkload := workload.DeepCopy()
 
-		workNamespace := names.GenerateExecutionSpaceName(targetCluster.Name)
-
+		var targetReplicas = int32(0)
 		// If and only if the resource template has replicas, and the replica scheduling policy is divided,
 		// we need to revise replicas.
 		if needReviseReplicas(replicas, placement) {
@@ -88,6 +92,7 @@ func ensureWork(
 						workload.GetKind(), workload.GetNamespace(), workload.GetName(), targetCluster.Name, err)
 					return err
 				}
+				targetReplicas = targetCluster.Replicas
 			}
 
 			// Set allocated completions for Job only when the '.spec.completions' field not omitted from resource template.
@@ -100,6 +105,33 @@ func ensureWork(
 						clonedWorkload.GetKind(), clonedWorkload.GetNamespace(), clonedWorkload.GetName(), targetCluster.Name, err)
 					return err
 				}
+			}
+		}
+		splitReplicas[targetCluster.Name] = targetReplicas
+		splitWorkloads[targetCluster.Name] = clonedWorkload
+	}
+
+	splitPartitions := make(map[string]*intstr.IntOrString, len(targetClusters))
+	if resourceInterpreter.HookEnabled(workload.GroupVersionKind(), configv1alpha1.InterpreterOperationInterpretPartition) {
+		partition, err := resourceInterpreter.GetPartition(workload)
+		if err != nil {
+			return err
+		}
+		splitPartitions = splitPartition(partition, replicas, splitReplicas)
+	}
+
+	for _, targetCluster := range targetClusters {
+		clonedWorkload := splitWorkloads[targetCluster.Name]
+		partition := splitPartitions[targetCluster.Name]
+
+		workNamespace := names.GenerateExecutionSpaceName(targetCluster.Name)
+
+		if needRevisePartition(partition, placement) {
+			clonedWorkload, err = resourceInterpreter.RevisePartition(clonedWorkload, partition)
+			if err != nil {
+				klog.Errorf("Failed to revise partition %v for %s/%s/%s in cluster %s, err is: %v",
+					partition, workload.GetKind(), workload.GetNamespace(), workload.GetName(), targetCluster.Name, err)
+				return err
 			}
 		}
 
@@ -268,6 +300,84 @@ func divideReplicasByJobCompletions(workload *unstructured.Unstructured, cluster
 	return targetClusters, nil
 }
 
+func splitPartition(partition *intstr.IntOrString, replicas int32, splitReplicas map[string]int32) map[string]*intstr.IntOrString {
+	splitPartitions := make(map[string]*intstr.IntOrString, len(splitReplicas))
+	if partition == nil {
+		return splitPartitions
+	}
+
+	switch partition.Type {
+	case intstr.Int:
+		return splitPartitionInt(partition, replicas, splitReplicas)
+	case intstr.String:
+		return splitPartitionPercentage(partition, replicas, splitReplicas)
+	}
+	return splitPartitions
+}
+
+func splitPartitionInt(partition *intstr.IntOrString, replicas int32, splitReplicas map[string]int32) map[string]*intstr.IntOrString {
+	type clusterInfo struct {
+		name      string
+		replicas  int32
+		partition int32
+	}
+
+	var clusters []clusterInfo
+	for clusterName, replica := range splitReplicas {
+		clusters = append(clusters, clusterInfo{name: clusterName, replicas: replica})
+	}
+
+	numClusters := len(clusters)
+	allocated := int32(0)
+	splitPartitions := make(map[string]*intstr.IntOrString, numClusters)
+	for _, cluster := range clusters {
+		split := int32(math.Floor(float64(cluster.replicas*partition.IntVal) / float64(replicas)))
+		splitPartitions[cluster.name] = &intstr.IntOrString{Type: intstr.Int, IntVal: split}
+		allocated += split
+	}
+
+	if partition.IntVal-allocated == 0 {
+		return splitPartitions
+	}
+
+	sort.Slice(clusters, func(i, j int) bool {
+		return clusters[i].replicas < clusters[j].replicas
+	})
+
+	index := 0
+	for partition.IntVal-allocated > 0 && allocated < replicas {
+		p := splitPartitions[clusters[index].name]
+		if p != nil && p.IntVal < splitReplicas[clusters[index].name] {
+			p.IntVal++
+			allocated++
+		}
+		index = (index + 1) % numClusters
+	}
+
+	for allocated-partition.IntVal > 0 && allocated > 0 {
+		p := splitPartitions[clusters[index].name]
+		if p != nil && p.IntVal > 0 {
+			p.IntVal--
+			allocated--
+		}
+		index = (index + 1) % numClusters
+	}
+	return splitPartitions
+}
+
+func splitPartitionPercentage(partition *intstr.IntOrString, replicas int32, splitReplicas map[string]int32) map[string]*intstr.IntOrString {
+	intValue, err := intstr.GetScaledValueFromIntOrPercent(partition, int(replicas), true)
+	if err == nil {
+		klog.Errorf("Failed to split partition %v: %v", partition, err)
+	}
+	partitionInt := intstr.FromInt32(int32(intValue))
+	return splitPartitionInt(&partitionInt, replicas, splitReplicas)
+}
+
 func needReviseReplicas(replicas int32, placement *policyv1alpha1.Placement) bool {
 	return replicas > 0 && placement != nil && placement.ReplicaSchedulingType() == policyv1alpha1.ReplicaSchedulingTypeDivided
+}
+
+func needRevisePartition(partition *intstr.IntOrString, placement *policyv1alpha1.Placement) bool {
+	return partition != nil && placement != nil && placement.RollingUpdatingType() == policyv1alpha1.RollingUpdatingTypeDivided
 }

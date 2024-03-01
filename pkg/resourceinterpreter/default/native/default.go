@@ -18,6 +18,7 @@ package native
 
 import (
 	"fmt"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,7 +33,9 @@ import (
 // for interpreting common resource.
 type DefaultInterpreter struct {
 	replicaHandlers         map[schema.GroupVersionKind]replicaInterpreter
+	partitionHandlers       map[schema.GroupVersionKind]partitionInterpreter
 	reviseReplicaHandlers   map[schema.GroupVersionKind]reviseReplicaInterpreter
+	revisePartitionHandlers map[schema.GroupVersionKind]revisePartitionInterpreter
 	retentionHandlers       map[schema.GroupVersionKind]retentionInterpreter
 	aggregateStatusHandlers map[schema.GroupVersionKind]aggregateStatusInterpreter
 	dependenciesHandlers    map[schema.GroupVersionKind]dependenciesInterpreter
@@ -44,7 +47,9 @@ type DefaultInterpreter struct {
 func NewDefaultInterpreter() *DefaultInterpreter {
 	return &DefaultInterpreter{
 		replicaHandlers:         getAllDefaultReplicaInterpreter(),
+		partitionHandlers:       getAllDefaultPartitionInterpreter(),
 		reviseReplicaHandlers:   getAllDefaultReviseReplicaInterpreter(),
+		revisePartitionHandlers: getAllDefaultRevisePartitionInterpreter(),
 		retentionHandlers:       getAllDefaultRetentionInterpreter(),
 		aggregateStatusHandlers: getAllDefaultAggregateStatusInterpreter(),
 		dependenciesHandlers:    getAllDefaultDependenciesInterpreter(),
@@ -56,6 +61,14 @@ func NewDefaultInterpreter() *DefaultInterpreter {
 // HookEnabled tells if any hook exist for specific resource type and operation type.
 func (e *DefaultInterpreter) HookEnabled(kind schema.GroupVersionKind, operationType configv1alpha1.InterpreterOperation) bool {
 	switch operationType {
+	case configv1alpha1.InterpreterOperationInterpretPartition:
+		if _, exist := e.partitionHandlers[kind]; exist {
+			return true
+		}
+	case configv1alpha1.InterpreterOperationRevisePartition:
+		if _, exist := e.revisePartitionHandlers[kind]; exist {
+			return true
+		}
 	case configv1alpha1.InterpreterOperationInterpretReplica:
 		if _, exist := e.replicaHandlers[kind]; exist {
 			return true
@@ -107,6 +120,26 @@ func (e *DefaultInterpreter) ReviseReplica(object *unstructured.Unstructured, re
 		return nil, fmt.Errorf("default %s interpreter for %q not found", configv1alpha1.InterpreterOperationReviseReplica, object.GroupVersionKind())
 	}
 	return handler(object, replica)
+}
+
+func (e *DefaultInterpreter) GetPartition(object *unstructured.Unstructured) (*intstr.IntOrString, error) {
+	klog.V(4).Infof("Get partition for object: %v %s/%s with build-in interpreter.", object.GroupVersionKind(), object.GetNamespace(), object.GetName())
+	handler, exist := e.partitionHandlers[object.GroupVersionKind()]
+	if !exist {
+		klog.Infof("default %s interpreter for %q not found", configv1alpha1.InterpreterOperationReviseReplica, object.GroupVersionKind())
+		return nil, nil
+	}
+	return handler(object)
+}
+
+func (e *DefaultInterpreter) RevisePartition(object *unstructured.Unstructured, partition *intstr.IntOrString) (*unstructured.Unstructured, error) {
+	klog.V(4).Infof("Revise partition for object: %v %s/%s with build-in interpreter.", object.GroupVersionKind(), object.GetNamespace(), object.GetName())
+	handler, exist := e.revisePartitionHandlers[object.GroupVersionKind()]
+	if !exist {
+		klog.Infof("default %s interpreter for %q not found", configv1alpha1.InterpreterOperationReviseReplica, object.GroupVersionKind())
+		return object, nil
+	}
+	return handler(object, partition)
 }
 
 // Retain returns the objects that based on the "desired" object but with values retained from the "observed" object.

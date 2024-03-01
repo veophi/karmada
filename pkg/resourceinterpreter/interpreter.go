@@ -18,10 +18,10 @@ package resourceinterpreter
 
 import (
 	"context"
-
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	corev1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 
@@ -48,6 +48,12 @@ type ResourceInterpreter interface {
 
 	// ReviseReplica revises the replica of the given object.
 	ReviseReplica(object *unstructured.Unstructured, replica int64) (*unstructured.Unstructured, error)
+
+	// GetPartition return desired partition of the object.
+	GetPartition(object *unstructured.Unstructured) (partition *intstr.IntOrString, err error)
+
+	// RevisePartition revises the partition of the given object.
+	RevisePartition(object *unstructured.Unstructured, partition *intstr.IntOrString) (*unstructured.Unstructured, error)
 
 	// Retain returns the objects that based on the "desired" object but with values retained from the "observed" object.
 	Retain(desired *unstructured.Unstructured, observed *unstructured.Unstructured) (retained *unstructured.Unstructured, err error)
@@ -144,6 +150,14 @@ func (i *customResourceInterpreterImpl) GetReplicas(object *unstructured.Unstruc
 
 	replica, requires, err = i.defaultInterpreter.GetReplicas(object)
 	return
+}
+
+func (i *customResourceInterpreterImpl) GetPartition(object *unstructured.Unstructured) (*intstr.IntOrString, error) {
+	return i.defaultInterpreter.GetPartition(object)
+}
+
+func (i *customResourceInterpreterImpl) RevisePartition(object *unstructured.Unstructured, partition *intstr.IntOrString) (*unstructured.Unstructured, error) {
+	return i.defaultInterpreter.RevisePartition(object, partition)
 }
 
 // ReviseReplica revises the replica of the given object.

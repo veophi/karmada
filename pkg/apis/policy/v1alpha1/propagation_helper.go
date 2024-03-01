@@ -44,3 +44,13 @@ func (p *Placement) ReplicaSchedulingType() ReplicaSchedulingType {
 
 	return p.ReplicaScheduling.ReplicaSchedulingType
 }
+
+// RollingUpdatingType returns the partition assignment strategy which is
+// "Duplicated" or "Divided". Returns "Duplicated" if the update strategy is nil.
+func (p *Placement) RollingUpdatingType() RollingUpdatingType {
+	if p.RollingUpdating == nil {
+		return RollingUpdatingTypeDivided
+	}
+
+	return p.RollingUpdating.RollingUpdatingType
+}

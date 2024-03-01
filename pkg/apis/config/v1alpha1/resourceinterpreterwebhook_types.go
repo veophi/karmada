@@ -106,8 +106,12 @@ const (
 	// Only necessary for those resource types that have replica declaration, like Deployment or similar custom resources.
 	InterpreterOperationInterpretReplica InterpreterOperation = "InterpretReplica"
 
+	InterpreterOperationInterpretPartition InterpreterOperation = "InterpretPartition"
+
 	// InterpreterOperationReviseReplica indicates that karmada request webhook to modify the replica.
 	InterpreterOperationReviseReplica InterpreterOperation = "ReviseReplica"
+
+	InterpreterOperationRevisePartition InterpreterOperation = "RevisePartition"
 
 	// InterpreterOperationInterpretStatus indicates that karmada want to figure out how to get the status.
 	// Only necessary for those resource types that define their status in a special path(not '.status').
