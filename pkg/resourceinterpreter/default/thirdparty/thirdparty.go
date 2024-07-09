@@ -227,6 +227,60 @@ func (p *ConfigurableInterpreter) InterpretHealth(object *unstructured.Unstructu
 	return
 }
 
+func (p *ConfigurableInterpreter) GetRollingStrategy(object *unstructured.Unstructured) (strategy *configv1alpha1.RollingStrategy, enabled bool, err error) {
+	klog.V(4).Infof("Get rolling strategy of object: %v %s/%s with thirdparty configurable interpreter.", object.GroupVersionKind(), object.GetNamespace(), object.GetName())
+
+	customAccessor, enabled := p.getCustomAccessor(object.GroupVersionKind())
+	if !enabled {
+		return
+	}
+
+	script := customAccessor.GetRollingStrategyLuaScript()
+	if len(script) == 0 {
+		enabled = false
+		return
+	}
+
+	strategy, err = p.luaVM.GetRollingStrategy(object, script)
+	return
+}
+
+func (p *ConfigurableInterpreter) ReviseRollingStrategy(object *unstructured.Unstructured, rollingStrategy *configv1alpha1.RollingStrategy) (revised *unstructured.Unstructured, enabled bool, err error) {
+	klog.V(4).Infof("Revise rolling strategy of object: %v %s/%s with thirdparty configurable interpreter.", object.GroupVersionKind(), object.GetNamespace(), object.GetName())
+
+	customAccessor, enabled := p.getCustomAccessor(object.GroupVersionKind())
+	if !enabled {
+		return
+	}
+
+	script := customAccessor.GetRollingStrategyRevisionLuaScript()
+	if len(script) == 0 {
+		enabled = false
+		return
+	}
+
+	revised, err = p.luaVM.ReviseRollingStrategy(object, rollingStrategy, script)
+	return
+}
+
+func (p *ConfigurableInterpreter) InterpretRawStatus(object *unstructured.Unstructured, rawStatus *runtime.RawExtension) (status *configv1alpha1.UnifiedRollingStatus, enabled bool, err error) {
+	klog.V(4).Infof("Interpret raw status of object: %v %s/%s with thirdparty configurable interpreter.", object.GroupVersionKind(), object.GetNamespace(), object.GetName())
+
+	customAccessor, enabled := p.getCustomAccessor(object.GroupVersionKind())
+	if !enabled {
+		return
+	}
+
+	script := customAccessor.GetInterpretRawStatusLuaScript()
+	if len(script) == 0 {
+		enabled = false
+		return
+	}
+
+	status, err = p.luaVM.InterpretRawStatus(object, rawStatus, script)
+	return
+}
+
 func (p *ConfigurableInterpreter) getCustomAccessor(kind schema.GroupVersionKind) (configmanager.CustomAccessor, bool) {
 	customAccessor, exist := p.configManager.CustomAccessors()[kind]
 	return customAccessor, exist

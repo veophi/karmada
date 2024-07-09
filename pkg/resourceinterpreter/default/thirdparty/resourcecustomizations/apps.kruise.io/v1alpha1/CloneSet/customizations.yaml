@@ -21,6 +21,42 @@ spec:
           obj.spec.replicas = desiredReplica
           return obj
         end
+    rollingStrategy:
+      luaScript: >
+        function GetRollingUpdateStrategy(obj)
+          local strategy = {}
+          if obj.spec.updateStrategy == nil then
+              return strategy
+          end
+          if obj.spec.updateStrategy.partition ~= nil then
+              strategy.partition = obj.spec.updateStrategy.partition
+          end
+          if obj.spec.updateStrategy.maxUnavailable ~= nil then
+              strategy.maxUnavailable = obj.spec.updateStrategy.maxUnavailable
+          end
+          if obj.spec.updateStrategy.maxSurge ~= nil then
+              strategy.maxSurge = obj.spec.updateStrategy.maxSurge
+          end
+          return strategy 
+        end
+    rollingStrategyRevision:
+      luaScript: >
+        function ReviseRollingUpdateStrategy(obj, desiredStrategy)
+          if obj.spec.updateStrategy == nil then
+            obj.spec.updateStrategy = {}
+          end
+          if desiredStrategy.partition ~= nil then
+            obj.spec.updateStrategy.partition = desiredStrategy.partition
+          end
+          if desiredStrategy.maxUnavailable ~= nil then
+            obj.spec.updateStrategy.maxUnavailable = desiredStrategy.maxUnavailable
+          end
+          if desiredStrategy.maxSurge ~= nil then
+            obj.spec.updateStrategy.maxSurge = desiredStrategy.maxSurge
+          end
+          return obj
+        end
+
     statusAggregation:
       luaScript: >
         function AggregateStatus(desiredObj, statusItems)

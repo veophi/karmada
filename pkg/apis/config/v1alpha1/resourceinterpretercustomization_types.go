@@ -133,6 +133,24 @@ type CustomizationRules struct {
 	// If DependencyInterpretation is set, the built-in rules will be ignored.
 	// +optional
 	DependencyInterpretation *DependencyInterpretation `json:"dependencyInterpretation,omitempty"`
+
+	RollingStrategy *RollingStrategyInterpretation `json:"rollingStrategy,omitempty"`
+
+	RollingStrategyRevision *RollingStrategyRevision `json:"rollingStrategyRevision,omitempty"`
+
+	RawStatusInterpretation *RawStatusInterpretation `json:"rawStatusInterpretation,omitempty"`
+}
+
+type RollingStrategyInterpretation struct {
+	LuaScript string `json:"luaScript"`
+}
+
+type RollingStrategyRevision struct {
+	LuaScript string `json:"luaScript"`
+}
+
+type RawStatusInterpretation struct {
+	LuaScript string `json:"luaScript"`
 }
 
 // LocalValueRetention holds the scripts for retention.

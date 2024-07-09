@@ -313,6 +313,58 @@ func (vm *VM) GetDependencies(object *unstructured.Unstructured, script string) 
 	return
 }
 
+func (vm *VM) GetRollingStrategy(object *unstructured.Unstructured, script string) (strategy *configv1alpha1.RollingStrategy, err error) {
+	results, err := vm.RunScript(script, "GetRollingStrategy", 1, object)
+	if err != nil {
+		return nil, err
+	}
+
+	luaResult := results[0]
+
+	if luaResult.Type() != lua.LTTable {
+		return nil, fmt.Errorf("expect the returned type is table but got %s", luaResult.Type())
+	}
+
+	strategy = &configv1alpha1.RollingStrategy{}
+	err = ConvertLuaResultInto(luaResult.(*lua.LTable), &strategy)
+	return
+}
+
+func (vm *VM) ReviseRollingStrategy(object *unstructured.Unstructured, rollingStrategy *configv1alpha1.RollingStrategy, script string) (*unstructured.Unstructured, error) {
+	results, err := vm.RunScript(script, "ReviseRollingStrategy", 1, object, rollingStrategy)
+	if err != nil {
+		return nil, err
+	}
+
+	luaResult := results[0]
+	reviseReplicaResult := &unstructured.Unstructured{}
+	if luaResult.Type() == lua.LTTable {
+		err := ConvertLuaResultInto(luaResult.(*lua.LTable), reviseReplicaResult, object)
+		if err != nil {
+			return nil, err
+		}
+		return reviseReplicaResult, nil
+	}
+
+	return nil, fmt.Errorf("expect the returned requires type is table but got %s", luaResult.Type())
+}
+
+func (vm *VM) InterpretRawStatus(object *unstructured.Unstructured, rawStatus *runtime.RawExtension, script string) (status *configv1alpha1.UnifiedRollingStatus, err error) {
+	results, err := vm.RunScript(script, "InterpretRollingStatus", 1, rawStatus)
+	if err != nil {
+		return nil, err
+	}
+
+	luaStatusResult := results[0]
+	if luaStatusResult.Type() != lua.LTTable {
+		return nil, fmt.Errorf("expect the returned type is table but got %s", luaStatusResult.Type())
+	}
+
+	status = &configv1alpha1.UnifiedRollingStatus{}
+	err = ConvertLuaResultInto(luaStatusResult.(*lua.LTable), status)
+	return status, err
+}
+
 // NewWithContext creates a lua VM with the given context.
 func NewWithContext(ctx context.Context) (*lua.LState, error) {
 	vm := VM{}

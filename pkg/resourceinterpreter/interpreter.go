@@ -64,6 +64,15 @@ type ResourceInterpreter interface {
 	// InterpretHealth returns the health state of the object.
 	InterpretHealth(object *unstructured.Unstructured) (healthy bool, err error)
 
+	// GetRollingStrategy returns the rolling strategy of the object.
+	GetRollingStrategy(object *unstructured.Unstructured) (rollingStrategy *configv1alpha1.RollingStrategy, err error)
+
+	// ReviseRollingStrategy revises the rolling strategy of the given object.
+	ReviseRollingStrategy(object *unstructured.Unstructured, rollingStrategy *configv1alpha1.RollingStrategy) (revisedObject *unstructured.Unstructured, err error)
+
+	// InterpretRollingStatus interprets the raw status of the object as unified rolling status.
+	InterpretRollingStatus(object *unstructured.Unstructured, rawStatus *runtime.RawExtension) (status *configv1alpha1.UnifiedRollingStatus, err error)
+
 	// other common method
 }
 
@@ -338,4 +347,37 @@ func (i *customResourceInterpreterImpl) InterpretHealth(object *unstructured.Uns
 
 	healthy, err = i.defaultInterpreter.InterpretHealth(object)
 	return
+}
+
+func (i *customResourceInterpreterImpl) GetRollingStrategy(object *unstructured.Unstructured) (strategy *configv1alpha1.RollingStrategy, err error) {
+	strategy, hookEnabled, err := i.thirdpartyInterpreter.GetRollingStrategy(object)
+	if err != nil {
+		return
+	}
+	if hookEnabled {
+		return
+	}
+	return
+}
+
+func (i *customResourceInterpreterImpl) ReviseRollingStrategy(object *unstructured.Unstructured, rollingStrategy *configv1alpha1.RollingStrategy) (*unstructured.Unstructured, error) {
+	revisedObject, hookEnabled, err := i.thirdpartyInterpreter.ReviseRollingStrategy(object, rollingStrategy)
+	if err != nil {
+		return nil, err
+	}
+	if hookEnabled {
+		return nil, nil
+	}
+	return revisedObject, nil
+}
+
+func (i *customResourceInterpreterImpl) InterpretRollingStatus(object *unstructured.Unstructured, rawStatus *runtime.RawExtension) (*configv1alpha1.UnifiedRollingStatus, error) {
+	status, hookEnabled, err := i.thirdpartyInterpreter.InterpretRawStatus(object, rawStatus)
+	if err != nil {
+		return nil, err
+	}
+	if hookEnabled {
+		return nil, nil
+	}
+	return status, nil
 }

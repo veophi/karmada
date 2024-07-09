@@ -120,7 +120,7 @@ spec:
 ```
 
 We expect that the Deployment Rolling Update with 2 maxUnavailable and 1 maxSurge will be scheduled to 2 clusters, and the rollout process will be consistent with the semantics in a single-cluster setting.
-During rolling processing, the number of unavailable Pods will not exceed 2, and the number of Pods will not exceed 11.
+During rolling processing, the number of available pods is not less than 8, and the number of Pods will not exceed 11.
 
 #### Story #2: Batch Release with Partition
 ```yaml
@@ -159,7 +159,7 @@ spec:
 
 
 We expect that the CloneSet cloud be paused when the number of Pods with the new image reaches 4, and the rollout process will be consistent with the semantics in a single-cluster setting. 
-During rolling processing, the number of unavailable Pods will not exceed 2.
+During rolling processing, the number of available pods is not less than 8.
 
 
 ### Risks and Mitigations
@@ -192,45 +192,90 @@ proposal will be implemented, this is the place to discuss them.
 
 ### Code Changes required
 - New Methods in Resource Interpreter
+
 ```golang
 package resourceinterpreter
 
+import (
+	"crypto/x509/pkix"
+	"k8s.io/apimachinery/pkg/runtime"
+)
+
+type RollingUpdateStrategy struct {
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
+	MaxSurge       *intstr.IntOrString `json:"maxSurge,omitempty"`
+	Partition      *intstr.IntOrString `json:"partition,omitempty"`
+}
+
+type WorkloadStatus struct {
+	Replicas             *int32 `json:"replicas,omitempty"`
+	ReadyReplicas        *int32 `json:"readyReplicas,omitempty"`
+	AvailableReplicas    *int32 `json:"availableReplicas,omitempty"`
+	UpdatedReplicas      *int32 `json:"updatedReplicas,omitempty"`
+	UpdatedReadyReplicas *int32 `json:"updatedReadyReplicas,omitempty"`
+    Generation           *int64 `json:"generation,omitempty"`
+    ObservedGeneration   *int64 `json:"observedGeneration,omitempty"`
+}
+
 type ResourceInterpreter interface {
-	// Get & Set for Partition
-	GetPartition(object *unstructured.Unstructured) (*intstr.IntOrString, error)
-	RevisePartition(object *unstructured.Unstructured, partition *intstr.IntOrString) (*unstructured.Unstructured, error)
+	GetRollingUpdateStrategy(object *unstructured.Unstructured) (RollingUpdateStrategy, error)
+	ReviseRollingUpdateStrategy(object *unstructured.Unstructured, strategy *RollingUpdateStrategy) (*unstructured.Unstructured, error)
 
-	// Get & Set for MaxSurge
-	GetMaxSurge(object *unstructured.Unstructured) (*intstr.IntOrString, error)
-	ReviseMaxSurge(object *unstructured.Unstructured, maxSurge *intstr.IntOrString) (*unstructured.Unstructured, error)
-
-	// Get & Set for MaxUnavailble
-	GetMaxUnavailable(object *unstructured.Unstructured) (*intstr.IntOrString, err error)
-	ReviseMaxUnavailable(object *unstructured.Unstructured, maxUnavailable *intstr.IntOrString) (*unstructured.Unstructured, error)
-
-	RolloutInterperter
+	// InterpretRawStatus translate the raw status of workload to typed WorkloadStatus, for example:
+    //   rawStatus, err := interpreter.ReflectStatus(workload)
+    //   ... ...
+    //   status, err := interpreter.InterpretRawStatus(rawStatus)
+    //   ... ...
+	InterpretRawStatus(rawStatus runtime.RawExtension) (WorkloadStatus, error)
 }
 ```
 
 - New Interpreter for Rollout
+
 ```golang
 package rolloutinterpreter
+
+import "github.com/karmada-io/karmada/pkg/resourceinterpreter"
+
 type RolloutInterperter interface {
 	ReviseRolloutConfigurations(resourceTemplate *unstructured.Unstructured, workloads *map[string]*unstructured.Unstructured, works map[string]*workv1alpha1.Work) (map[string]*unstructured.Unstructured, error)
 }
 
 type universalRolloutInterperter struct {
+	resourceInterpreter resourceinterpreter.ResourceInterpreter
 }
 
 func (uri *universalRolloutInterperter) ReviseRolloutConfigurations(resourceTemplate *unstructured.Unstructured, workloads *map[string]*unstructured.Unstructured, works map[string]*workv1alpha1.Work) (map[string]*unstructured.Unstructured, error) {
+	targetRollingStrategy, err := uri.resourceInterpreter.GetRollingUpdateStrategy(resourceTemplate)
+	//... ...
+    
+    memberWorkloadStatus, err := func() (map[string]resourceinterpreter.WorkloadStatus, error) {
+		workloadStatuses := make(map[string]resourceinterpreter.WorkloadStatus, len(works))
+		for _, work := range works {
+		    workloadStatuses[work.Name], err  = uri.resourceInterpreter.ReflectUnifiedStatus(work.Status.Raw)
+            //... ...
+	    }
+		return workloadStatuses, nil
+	}()
+    
+    memberRollingStrategy, err := func() (map[string]resourceinterpreter.RollingUpdateStrategy, error) {
+		rollingStrategy := make(map[string]resourceinterpreter.RollingUpdateStrategy, len(works))
+		/*
+		   1. calculate partition for each workload if has partition interperter
+		   2. calculate maxUnavailble for each workload if has maxUnavailable interperter
+		   3. calculate maxSurge for each workload if has maxSurge interperter
+		*/
+        // ... ...
+		return rollingStrategy, nil 
+	}()
+	
+    //... ...
 	modifiedWorkloads := make(map[string]*unstructured.Unstructured, len(workloads))
-	/*
-	   1. calculate partition for each workload if has partition interperter
-	   2. calculate maxUnavailble for each workload if has maxUnavailable interperter
-	   3. calculate maxSurge for each workload if has maxSurge interperter
-	   4. patch these calculated fields to each workload
-	*/
-	return modifiedWorkloads
+    for name, workload := range workloads {
+		modifiedWorkloads[name], err = uri.resourceInterpreter.ReviseRollingUpdateStrategy(workload, &memberRollingStrategy[name])
+		// ... ...
+    }
+	return modifiedWorkloads, nil
 }
 ```
 

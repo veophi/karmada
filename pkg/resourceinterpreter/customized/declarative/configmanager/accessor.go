@@ -36,6 +36,9 @@ type LuaScriptAccessor interface {
 	GetStatusAggregationLuaScript() string
 	GetHealthInterpretationLuaScript() string
 	GetDependencyInterpretationLuaScripts() []string
+	GetRollingStrategyLuaScript() string
+	GetRollingStrategyRevisionLuaScript() string
+	GetInterpretRawStatusLuaScript() string
 }
 
 // CustomAccessor provides a common interface to get custom interpreter configuration.
@@ -51,6 +54,9 @@ type resourceCustomAccessor struct {
 	statusAggregation         *configv1alpha1.StatusAggregation
 	healthInterpretation      *configv1alpha1.HealthInterpretation
 	dependencyInterpretations []*configv1alpha1.DependencyInterpretation
+	rollingStrategy           *configv1alpha1.RollingStrategyInterpretation
+	rollingStrategyRevision   *configv1alpha1.RollingStrategyRevision
+	interpretRawStatus        *configv1alpha1.RawStatusInterpretation
 }
 
 // NewResourceCustomAccessor creates an accessor for resource interpreter customization.
@@ -123,6 +129,27 @@ func (a *resourceCustomAccessor) GetHealthInterpretationLuaScript() string {
 		return ""
 	}
 	return a.healthInterpretation.LuaScript
+}
+
+func (a *resourceCustomAccessor) GetRollingStrategyLuaScript() string {
+	if a.rollingStrategy == nil {
+		return ""
+	}
+	return a.rollingStrategy.LuaScript
+}
+
+func (a *resourceCustomAccessor) GetRollingStrategyRevisionLuaScript() string {
+	if a.rollingStrategyRevision == nil {
+		return ""
+	}
+	return a.rollingStrategyRevision.LuaScript
+}
+
+func (a *resourceCustomAccessor) GetInterpretRawStatusLuaScript() string {
+	if a.interpretRawStatus == nil {
+		return ""
+	}
+	return a.interpretRawStatus.LuaScript
 }
 
 func (a *resourceCustomAccessor) GetDependencyInterpretationLuaScripts() []string {
@@ -202,6 +229,39 @@ func (a *resourceCustomAccessor) setHealthInterpretation(healthInterpretation *c
 
 	if healthInterpretation.LuaScript != "" && a.healthInterpretation.LuaScript == "" {
 		a.healthInterpretation.LuaScript = healthInterpretation.LuaScript
+	}
+}
+
+func (a *resourceCustomAccessor) setRollingStrategy(rollingStrategy *configv1alpha1.RollingStrategyInterpretation) {
+	if a.rollingStrategy == nil {
+		a.rollingStrategy = rollingStrategy
+		return
+	}
+
+	if rollingStrategy.LuaScript != "" && a.rollingStrategy.LuaScript == "" {
+		a.rollingStrategy.LuaScript = rollingStrategy.LuaScript
+	}
+}
+
+func (a *resourceCustomAccessor) setRollingStrategyRevision(rollingStrategyRevision *configv1alpha1.RollingStrategyRevision) {
+	if a.rollingStrategyRevision == nil {
+		a.rollingStrategyRevision = rollingStrategyRevision
+		return
+	}
+
+	if rollingStrategyRevision.LuaScript != "" && a.rollingStrategyRevision.LuaScript == "" {
+		a.rollingStrategyRevision.LuaScript = rollingStrategyRevision.LuaScript
+	}
+}
+
+func (a *resourceCustomAccessor) setInterpretRawStatus(interpretRawStatus *configv1alpha1.RawStatusInterpretation) {
+	if a.interpretRawStatus == nil {
+		a.interpretRawStatus = interpretRawStatus
+		return
+	}
+
+	if interpretRawStatus.LuaScript != "" && a.interpretRawStatus.LuaScript == "" {
+		a.interpretRawStatus.LuaScript = interpretRawStatus.LuaScript
 	}
 }
 
