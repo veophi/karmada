@@ -125,7 +125,10 @@ func (c *ClusterResourceBindingController) syncBinding(ctx context.Context, bind
 	}
 
 	start := time.Now()
-	err = ensureWork(ctx, c.Client, c.ResourceInterpreter, workload, c.OverrideManager, binding, apiextensionsv1.ClusterScoped)
+	stopSyncing, err := ensureWork(ctx, c.Client, c.ResourceInterpreter, workload, c.OverrideManager, binding, apiextensionsv1.ClusterScoped)
+	if stopSyncing {
+		return controllerruntime.Result{}, nil
+	}
 	metrics.ObserveSyncWorkLatency(err, start)
 	if err != nil {
 		klog.Errorf("Failed to transform clusterResourceBinding(%s) to works. Error: %v.", binding.GetName(), err)

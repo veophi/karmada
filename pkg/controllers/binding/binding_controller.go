@@ -19,27 +19,34 @@ package binding
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	controllerruntime "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	policyv1alpha1 "github.com/karmada-io/karmada/pkg/apis/policy/v1alpha1"
+	workv1alpha1 "github.com/karmada-io/karmada/pkg/apis/work/v1alpha1"
 	workv1alpha2 "github.com/karmada-io/karmada/pkg/apis/work/v1alpha2"
 	"github.com/karmada-io/karmada/pkg/events"
+	"github.com/karmada-io/karmada/pkg/features"
 	"github.com/karmada-io/karmada/pkg/metrics"
 	"github.com/karmada-io/karmada/pkg/resourceinterpreter"
 	"github.com/karmada-io/karmada/pkg/sharedcli/ratelimiterflag"
@@ -125,7 +132,10 @@ func (c *ResourceBindingController) syncBinding(ctx context.Context, binding *wo
 		return controllerruntime.Result{}, err
 	}
 	start := time.Now()
-	err = ensureWork(ctx, c.Client, c.ResourceInterpreter, workload, c.OverrideManager, binding, apiextensionsv1.NamespaceScoped)
+	stopSyncing, err := ensureWork(ctx, c.Client, c.ResourceInterpreter, workload, c.OverrideManager, binding, apiextensionsv1.NamespaceScoped)
+	if stopSyncing {
+		return controllerruntime.Result{}, nil
+	}
 	metrics.ObserveSyncWorkLatency(err, start)
 	if err != nil {
 		klog.Errorf("Failed to transform resourceBinding(%s/%s) to works. Error: %v.",
@@ -169,10 +179,75 @@ func (c *ResourceBindingController) SetupWithManager(mgr controllerruntime.Manag
 		WithEventFilter(predicate.GenerationChangedPredicate{}).
 		Watches(&policyv1alpha1.OverridePolicy{}, handler.EnqueueRequestsFromMapFunc(c.newOverridePolicyFunc())).
 		Watches(&policyv1alpha1.ClusterOverridePolicy{}, handler.EnqueueRequestsFromMapFunc(c.newOverridePolicyFunc())).
+		Watches(&workv1alpha1.Work{}, handler.EnqueueRequestsFromMapFunc(newWorkFunc()), builder.WithPredicates(c.workPredicate())).
 		WithOptions(controller.Options{RateLimiter: ratelimiterflag.DefaultControllerRateLimiter(c.RateLimiterOptions)}).
 		Complete(c)
 }
 
+// workPredicate handle work update event and enqueue when manifest status changes.
+func (c *ResourceBindingController) workPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(event.CreateEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if features.FeatureGate.Enabled(features.AlignRollingStrategy) {
+				return c.handleWorkRollingStrategy(e)
+			}
+			return false
+		},
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+}
+
+// handleWorkRollingStrategy checks if the work is related to rollingStrategy.
+func (c *ResourceBindingController) handleWorkRollingStrategy(e event.UpdateEvent) bool {
+	newWork, ok := e.ObjectNew.(*workv1alpha1.Work)
+	if !ok {
+		return false
+	}
+	if len(newWork.Status.ManifestStatuses) == 0 {
+		return false
+	}
+	newStatus := newWork.Status.ManifestStatuses[0]
+	groupVersionKind := schema.GroupVersionKind{
+		Group:   newStatus.Identifier.Group,
+		Version: newStatus.Identifier.Version,
+		Kind:    newStatus.Identifier.Kind,
+	}
+	if !careAboutRollingStrategy(c.ResourceInterpreter, groupVersionKind) {
+		return false
+	}
+
+	oldWork, ok := e.ObjectOld.(*workv1alpha1.Work)
+	if !ok {
+		return false
+	}
+	var oldManifestStatus *runtime.RawExtension
+	if len(oldWork.Status.ManifestStatuses) > 0 {
+		oldManifestStatus = oldWork.Status.ManifestStatuses[0].Status
+	}
+	return !reflect.DeepEqual(oldManifestStatus, newStatus.Status)
+}
+
+func newWorkFunc() handler.MapFunc {
+	return func(_ context.Context, workObj client.Object) []reconcile.Request {
+		var requests []reconcile.Request
+		annotations := workObj.GetAnnotations()
+		namespace, nsExist := annotations[workv1alpha2.ResourceBindingNamespaceAnnotationKey]
+		name, nameExist := annotations[workv1alpha2.ResourceBindingNameAnnotationKey]
+		if nsExist && nameExist {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: namespace,
+					Name:      name,
+				},
+			})
+		}
+		return requests
+	}
+}
+
+// newOverridePolicyFunc returns a new map function to handle override policy changes.
 func (c *ResourceBindingController) newOverridePolicyFunc() handler.MapFunc {
 	return func(ctx context.Context, a client.Object) []reconcile.Request {
 		var overrideRS []policyv1alpha1.ResourceSelector

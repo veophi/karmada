@@ -109,6 +109,18 @@ const (
 	// InterpreterOperationReviseReplica indicates that karmada request webhook to modify the replica.
 	InterpreterOperationReviseReplica InterpreterOperation = "ReviseReplica"
 
+	// InterpreterOperationRollingStrategy indicates that karmada want to figure out the rolling strategy of a specific object.
+	InterpreterOperationRollingStrategy InterpreterOperation = "InterpretRollingStrategy"
+
+	// InterpreterOperationTemplateHash indicates that karmada calculate the template hash of federation resources.
+	InterpreterOperationTemplateHash InterpreterOperation = "InterpreterTemplateHash"
+
+	// InterpreterOperationReviseRollingStrategy indicates that karmada request webhook to modify the rolling strategy.
+	InterpreterOperationReviseRollingStrategy InterpreterOperation = "ReviseRollingStrategy"
+
+	// InterpreterOperationRollingStatus indicates that karmada want to figure out the rolling status of a specific object.
+	InterpreterOperationRollingStatus InterpreterOperation = "InterpretRollingStatus"
+
 	// InterpreterOperationInterpretStatus indicates that karmada want to figure out how to get the status.
 	// Only necessary for those resource types that define their status in a special path(not '.status').
 	InterpreterOperationInterpretStatus InterpreterOperation = "InterpretStatus"

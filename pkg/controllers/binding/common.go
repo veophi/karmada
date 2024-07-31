@@ -23,6 +23,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,7 +31,9 @@ import (
 	configv1alpha1 "github.com/karmada-io/karmada/pkg/apis/config/v1alpha1"
 	policyv1alpha1 "github.com/karmada-io/karmada/pkg/apis/policy/v1alpha1"
 	workv1alpha2 "github.com/karmada-io/karmada/pkg/apis/work/v1alpha2"
+	"github.com/karmada-io/karmada/pkg/features"
 	"github.com/karmada-io/karmada/pkg/resourceinterpreter"
+	"github.com/karmada-io/karmada/pkg/rollout"
 	"github.com/karmada-io/karmada/pkg/util"
 	"github.com/karmada-io/karmada/pkg/util/helper"
 	"github.com/karmada-io/karmada/pkg/util/names"
@@ -39,9 +42,9 @@ import (
 
 // ensureWork ensure Work to be created or updated.
 func ensureWork(
-	ctx context.Context, c client.Client, resourceInterpreter resourceinterpreter.ResourceInterpreter, workload *unstructured.Unstructured,
+	ctx context.Context, c client.Client, interpreter resourceinterpreter.ResourceInterpreter, resourceTemplate *unstructured.Unstructured,
 	overrideManager overridemanager.OverrideManager, binding metav1.Object, scope apiextensionsv1.ResourceScope,
-) error {
+) (bool, error) {
 	var targetClusters []workv1alpha2.TargetCluster
 	var placement *policyv1alpha1.Placement
 	var requiredByBindingSnapshot []workv1alpha2.BindingSnapshot
@@ -71,28 +74,37 @@ func ensureWork(
 
 	var jobCompletions []workv1alpha2.TargetCluster
 	var err error
-	if workload.GetKind() == util.JobKind {
-		jobCompletions, err = divideReplicasByJobCompletions(workload, targetClusters)
+	if resourceTemplate.GetKind() == util.JobKind {
+		jobCompletions, err = divideReplicasByJobCompletions(resourceTemplate, targetClusters)
 		if err != nil {
-			return err
+			return false, err
 		}
 	}
 
+	// For some workload type resources, when we use its manifest status, we should know whether
+	// its template corresponds to the version of federated resource template, so we should calculate
+	// and set template hash of resource template here, and sync the hash to the work manifests.
+	resourceTemplate, err = setTemplateHashAnnotationIfNeeded(interpreter, binding, resourceTemplate)
+	if err != nil {
+		klog.Errorf("Failed to set template hash annotation on the resourceTemplate(%s/%s/%s): %v",
+			resourceTemplate.GetKind(), resourceTemplate.GetNamespace(), resourceTemplate.GetName(), err)
+		return false, err
+	}
+
+	workloads := make(map[string]*unstructured.Unstructured, len(targetClusters))
 	for i := range targetClusters {
 		targetCluster := targetClusters[i]
-		clonedWorkload := workload.DeepCopy()
-
-		workNamespace := names.GenerateExecutionSpaceName(targetCluster.Name)
+		clonedWorkload := resourceTemplate.DeepCopy()
 
 		// If and only if the resource template has replicas, and the replica scheduling policy is divided,
 		// we need to revise replicas.
 		if needReviseReplicas(replicas, placement) {
-			if resourceInterpreter.HookEnabled(clonedWorkload.GroupVersionKind(), configv1alpha1.InterpreterOperationReviseReplica) {
-				clonedWorkload, err = resourceInterpreter.ReviseReplica(clonedWorkload, int64(targetCluster.Replicas))
+			if interpreter.HookEnabled(clonedWorkload.GroupVersionKind(), configv1alpha1.InterpreterOperationReviseReplica) {
+				clonedWorkload, err = interpreter.ReviseReplica(clonedWorkload, int64(targetCluster.Replicas))
 				if err != nil {
 					klog.Errorf("Failed to revise replica for %s/%s/%s in cluster %s, err is: %v",
-						workload.GetKind(), workload.GetNamespace(), workload.GetName(), targetCluster.Name, err)
-					return err
+						resourceTemplate.GetKind(), resourceTemplate.GetNamespace(), resourceTemplate.GetName(), targetCluster.Name, err)
+					return false, err
 				}
 			}
 
@@ -104,16 +116,31 @@ func ensureWork(
 				if err = helper.ApplyReplica(clonedWorkload, int64(jobCompletions[i].Replicas), util.CompletionsField); err != nil {
 					klog.Errorf("Failed to apply Completions for %s/%s/%s in cluster %s, err is: %v",
 						clonedWorkload.GetKind(), clonedWorkload.GetNamespace(), clonedWorkload.GetName(), targetCluster.Name, err)
-					return err
+					return false, err
 				}
 			}
 		}
+		workloads[targetCluster.Name] = clonedWorkload
+	}
+
+	workloads, stopReconcile, err := alignWithRolloutStrategy(ctx, c, binding, interpreter, resourceTemplate, workloads, scope, targetClusters)
+	if err != nil {
+		klog.Errorf("Failed to align workloads with rolloutStrategy, err: %v", err)
+		return stopReconcile, err
+	} else if stopReconcile {
+		return stopReconcile, nil
+	}
+
+	for i := range targetClusters {
+		targetCluster := targetClusters[i]
+		clonedWorkload := workloads[targetCluster.Name]
+		workNamespace := names.GenerateExecutionSpaceName(targetCluster.Name)
 
 		// We should call ApplyOverridePolicies last, as override rules have the highest priority
 		cops, ops, err := overrideManager.ApplyOverridePolicies(clonedWorkload, targetCluster.Name)
 		if err != nil {
 			klog.Errorf("Failed to apply overrides for %s/%s/%s, err is: %v", clonedWorkload.GetKind(), clonedWorkload.GetNamespace(), clonedWorkload.GetName(), err)
-			return err
+			return false, err
 		}
 		workLabel := mergeLabel(clonedWorkload, binding, scope)
 
@@ -122,7 +149,7 @@ func ensureWork(
 		annotations, err = RecordAppliedOverrides(cops, ops, annotations)
 		if err != nil {
 			klog.Errorf("Failed to record appliedOverrides, Error: %v", err)
-			return err
+			return false, err
 		}
 
 		workMeta := metav1.ObjectMeta{
@@ -136,10 +163,10 @@ func ensureWork(
 		suspendDispatching := shouldSuspendDispatching(suspension, targetCluster)
 
 		if err = helper.CreateOrUpdateWork(ctx, c, workMeta, clonedWorkload, &suspendDispatching); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func mergeTargetClusters(targetClusters []workv1alpha2.TargetCluster, requiredByBindingSnapshot []workv1alpha2.BindingSnapshot) []workv1alpha2.TargetCluster {
@@ -284,4 +311,71 @@ func shouldSuspendDispatching(suspension *policyv1alpha1.Suspension, targetClust
 		}
 	}
 	return suspendDispatching
+}
+
+// replaceAnnotation replaces the annotation of the object with the given key and value.
+func replaceAnnotation(obj *unstructured.Unstructured, key, value string) {
+	annotations := obj.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[key] = value
+	obj.SetAnnotations(annotations)
+}
+
+func careAboutRollingStrategy(interpreter resourceinterpreter.ResourceInterpreter, objGVK schema.GroupVersionKind) bool {
+	return features.FeatureGate.Enabled(features.AlignRollingStrategy) &&
+		interpreter.HookEnabled(objGVK, configv1alpha1.InterpreterOperationTemplateHash) &&
+		interpreter.HookEnabled(objGVK, configv1alpha1.InterpreterOperationRollingStrategy) &&
+		interpreter.HookEnabled(objGVK, configv1alpha1.InterpreterOperationReviseRollingStrategy) &&
+		interpreter.HookEnabled(objGVK, configv1alpha1.InterpreterOperationRollingStatus)
+}
+
+func setTemplateHashAnnotationIfNeeded(interpreter resourceinterpreter.ResourceInterpreter, binding metav1.Object, resourceTemplate *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	if !careAboutRollingStrategy(interpreter, resourceTemplate.GroupVersionKind()) {
+		return resourceTemplate, nil
+	}
+
+	hash, err := interpreter.CalculateTemplateHash(resourceTemplate)
+	if err != nil {
+		return nil, err
+	}
+	// must deepcopy before write it.
+	resourceTemplate = resourceTemplate.DeepCopy()
+	replaceAnnotation(resourceTemplate, workv1alpha2.ResourceTemplateTemplateHashAnnotationKey, hash)
+	return resourceTemplate, nil
+}
+
+func alignWithRolloutStrategy(
+	ctx context.Context,
+	c client.Client,
+	binding metav1.Object,
+	interpreter resourceinterpreter.ResourceInterpreter,
+	resourceTemplate *unstructured.Unstructured,
+	workloads map[string]*unstructured.Unstructured,
+	scope apiextensionsv1.ResourceScope,
+	targetClusters []workv1alpha2.TargetCluster,
+) (map[string]*unstructured.Unstructured, bool, error) {
+	if !careAboutRollingStrategy(interpreter, resourceTemplate.GroupVersionKind()) {
+		return workloads, false, nil
+	}
+
+	var bindingID string
+	if scope == apiextensionsv1.NamespaceScoped {
+		bindingID = binding.GetLabels()[workv1alpha2.ResourceBindingPermanentIDLabel]
+	} else {
+		bindingID = binding.GetLabels()[workv1alpha2.ClusterResourceBindingPermanentIDLabel]
+	}
+	works, err := helper.GetActiveWorksByBindingID(ctx, c, bindingID, scope == apiextensionsv1.NamespaceScoped)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// Ensure the behavior of rolling strategy (e.g., maxUnavailable, maxSurge, partition) in federation is consistent with its semantics.
+	workloads, stopReconcile, err := rollout.NewAdapterRolloutInterpreter(interpreter).AlignRollingStrategy(resourceTemplate, workloads, targetClusters, works)
+	if err != nil {
+		klog.Errorf("Failed to align rolling strategy for %s/%s/%s, err is: %v", resourceTemplate.GetKind(), resourceTemplate.GetNamespace(), resourceTemplate.GetName(), err)
+		return nil, stopReconcile, err
+	}
+	return workloads, stopReconcile, nil
 }
